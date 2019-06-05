@@ -6,6 +6,11 @@ import java.io.FileWriter;
 import java.io.InputStreamReader;
 import java.lang.ProcessBuilder.Redirect;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public class ExtendScaffold {
     private static String read1 = "";
@@ -16,7 +21,8 @@ public class ExtendScaffold {
     private static String spadesKmerlen = "default";
     private static int minOverlapCircular = 5000;
     private static double minIdentityCircular = 95;
-    private static double salmonReadFraction = 0.35;
+    private static double salmonReadFraction = 0;
+    private static int minSuspiciousLen = 1500;
     
     private static void parseArguments(String[] args) {
         if (args.length == 0) {
@@ -44,6 +50,8 @@ public class ExtendScaffold {
                             minIdentityCircular = Double.parseDouble(args[i + 1]);
                         } else if (args[i].equals("-readFrac")) {
                             salmonReadFraction = Double.parseDouble(args[i + 1]);
+                        } else if (args[i].equals("-minSuspiciousLen")) {
+                            minSuspiciousLen = Integer.parseInt(args[i + 1]);
                         } else {
                             System.out.println("Invalid argument.");
                             System.exit(1);
@@ -441,7 +449,7 @@ public class ExtendScaffold {
             if (currentLength > 300000) {
                 extendContig = false;
             }
-            if (currentLength > prevLength)
+            else if (currentLength > prevLength)
             {
                 prevLength = currentLength;
                 createBed();
@@ -461,7 +469,7 @@ public class ExtendScaffold {
                 extendContig = false;
             }
             
-            if (extendContig && iteration > 1000) {
+            if (extendContig && iteration > 2000) {
                 extendContig = false;
             }
         }        
@@ -925,6 +933,304 @@ public class ExtendScaffold {
         return isCircular;
     }
     
+    private static void runAlignmentGetCoverage() {
+        String cmd = "";
+        try {
+            cmd = "cd " + outputDir + "\n" 
+                    + "rm -r bowtie2*\n"
+                    + "rm -r samtools*\n"
+                    + "bowtie2-build scaffold.fasta bowtie2-index\n"
+                    + "bowtie2 -x bowtie2-index "
+                    + "-1 " + read1
+                    + " -2 " + read2
+                    + " | samtools view -bS - | samtools view -h -F 0x04 -b - | "
+                    + "samtools sort - -o bowtie2-mapped.bam\n"
+                    + "samtools depth -a bowtie2-mapped.bam > samtools-coverage.txt\n";
+
+            FileWriter shellFileWriter = new FileWriter(outputDir + "/run.sh");
+            shellFileWriter.write("#!/bin/bash\n");
+            shellFileWriter.write(cmd);
+            shellFileWriter.close();
+
+            ProcessBuilder builder = new ProcessBuilder("sh", outputDir + "/run.sh");
+            builder.redirectError(Redirect.appendTo(new File(outputDir + "/log.txt")));
+            Process process = builder.start();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            while (reader.readLine() != null) {
+            }
+            process.waitFor();
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+    }
+    
+    private static List<Integer> percentile(List<Integer> values, List<Double> percentiles) { 
+        List<Integer> percentileResults = new ArrayList<Integer>();
+        Collections.sort(values); 
+        for (double percentile:percentiles) {
+            int index = (int) Math.ceil((percentile / 100.00) * values.size()); 
+            percentileResults.add(values.get(index - 1)); 
+        }
+        return percentileResults;
+    }
+    
+    private static List<Integer> readCoverageGetPercentile() {
+        List<Integer> coverages = new ArrayList<Integer>();
+        BufferedReader br = null;
+        try {
+            br = new BufferedReader(new FileReader(outputDir + "/samtools-coverage.txt"));
+            
+            String str = "";
+            String[] results;
+            
+            while ((str = br.readLine()) != null) {
+                str = str.trim();
+                results = str.split("\t");
+                int coverage = Integer.parseInt(results[2]);
+                if (coverage != 0) {
+                    coverages.add(coverage);
+                }                
+            }
+            br.close();
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+        List<Double> percentiles = new ArrayList<Double>();
+        percentiles.add(15.00);
+        percentiles.add(85.00);
+        List<Integer> percentileResults = percentile(coverages, percentiles);
+        
+        coverages = null;
+        
+        return percentileResults;
+    }
+    
+    private static boolean writeCoverageQuantile (int quantile15Percent, int quantile85Percent) 
+    {        
+        boolean noSuspicious = false;
+        int scaffoldLength = 0;
+        String scaffoldId = "";
+        List<Integer> suspiciousStarts = new ArrayList<Integer>();
+        List<Integer> suspiciousEnds = new ArrayList<Integer>();
+        
+        BufferedReader br = null;
+        try {
+            br = new BufferedReader(new FileReader(outputDir + "/scaffold.fasta.fai"));
+            String str = br.readLine();
+            str = str.trim();
+            String[] results = str.split("\t");
+            scaffoldLength = Integer.parseInt(results[1].trim()); 
+            scaffoldId = results[0].trim();
+            br.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        
+        try {                       
+            String str = "";
+            String[] results;
+            int coverage = 0;
+            int startBase = 0;
+            int currentBase = 0;
+            boolean lowHigh = false;
+            
+            br = new BufferedReader(new FileReader(outputDir + "/samtools-coverage.txt"));          
+            
+            while ((str = br.readLine()) != null) {
+                str = str.trim();
+                results = str.split("\t");
+                coverage = Integer.parseInt(results[2]);
+                currentBase = Integer.parseInt(results[1]);
+                if (coverage >= quantile15Percent && coverage <= quantile85Percent) {
+                    if (lowHigh) {
+                       if ((currentBase - startBase) > minSuspiciousLen) {
+                           suspiciousStarts.add(startBase);
+                           suspiciousEnds.add(currentBase-1);
+                       }
+                    }
+                    lowHigh = false;
+                }
+                else 
+                {
+                    if (startBase == 0 || !lowHigh) {
+                        startBase = currentBase;
+                    }
+                    lowHigh = true;
+                }
+            }
+            br.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }  
+        BufferedWriter bwCoverageOutputLog = null;
+        if (suspiciousStarts.isEmpty()) {
+            noSuspicious = true;
+            try {
+                bwCoverageOutputLog = new BufferedWriter(new FileWriter(outputDir + "/suspicious-regions.log", true));
+                bwCoverageOutputLog.write(scaffoldId + " has no suspicious region\n");
+                bwCoverageOutputLog.close();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }  
+        }
+        else 
+        {
+            int maxStartBase = 1;
+            int maxLength = 0;
+            int start = 0;
+
+            try {
+                bwCoverageOutputLog = new BufferedWriter(new FileWriter(outputDir + "/suspicious-regions.log", true));
+                bwCoverageOutputLog.write(scaffoldId + " has " + suspiciousStarts.size() + " suspicious regions\n");
+                
+                noSuspicious = false;
+                //get start and end of longest non-suspicious region  
+                for (int i = 0; i < suspiciousStarts.size(); i++) {
+                    start = suspiciousStarts.get(i);
+                    if (maxLength == 0) {
+                        maxLength = start - 1;                
+                    }
+                    else {
+                        if ((start - suspiciousEnds.get(i-1)) > maxLength) {
+                            maxLength = start - suspiciousEnds.get(i-1);
+                            maxStartBase = suspiciousEnds.get(i-1) + 1;
+                        }
+                    }
+                }
+                
+                if ((scaffoldLength - suspiciousEnds.get(suspiciousEnds.size()-1)) > maxLength) {
+                    maxLength = scaffoldLength - suspiciousEnds.get(suspiciousEnds.size()-1);
+                    maxStartBase = suspiciousEnds.get(suspiciousEnds.size()-1) + 1;
+                }
+                
+                bwCoverageOutputLog.close();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            //write bed file
+            BufferedWriter bw = null;
+            try {
+                bw = new BufferedWriter(new FileWriter(outputDir + "/longest-non-suspicious.bed"));
+                bw.write(scaffoldId + "\t" + maxStartBase + "\t" + (maxStartBase + maxLength - 1) + "\n");
+                bw.close();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            
+            //get fasta from bed file
+            try {
+                String cmd = "cd " + outputDir + "\n"
+                        + "rm -r longest-non-suspicious.fasta*\n"
+                        + "bedtools getfasta -fi scaffold.fasta -bed longest-non-suspicious.bed -fo longest-non-suspicious.fasta\n"
+                        + "samtools faidx longest-non-suspicious.fasta\n";
+    
+                FileWriter shellFileWriter = new FileWriter(outputDir + "/run.sh");
+                shellFileWriter.write("#!/bin/bash\n");
+                shellFileWriter.write(cmd);
+                shellFileWriter.close();
+    
+                ProcessBuilder builder = new ProcessBuilder("sh", outputDir + "/run.sh");
+                builder.redirectError(Redirect.appendTo(new File(outputDir + "/log.txt")));
+                Process process = builder.start();
+                BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                while (reader.readLine() != null) {
+                }
+                process.waitFor();
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+        }
+        
+        return noSuspicious;
+    }
+    
+    private static void updateScaffoldWithLongest(boolean firstTime) {
+        if (firstTime) 
+        {
+            File scaffoldFile = new File(outputDir + "/scaffold-truncated/scaffold.fasta");
+            if (scaffoldFile.exists() && !scaffoldFile.isDirectory()) 
+            {
+                String cmd = "";
+                try {
+                    cmd = "cd " + outputDir + "\n"
+                            + "rm scaffold.fasta*\n" 
+                            + "cd scaffold-truncated\n"
+                            + "rm scaffold.fasta*\n"
+                            + "cd ..\n"
+                            + "cp longest-non-suspicious.fasta scaffold-truncated/scaffold.fasta\n"
+                            + "cd scaffold-truncated\n"
+                            + "samtools faidx scaffold.fasta\n";
+
+                    FileWriter shellFileWriter = new FileWriter(outputDir + "/run.sh");
+                    shellFileWriter.write("#!/bin/bash\n");
+                    shellFileWriter.write(cmd);
+                    shellFileWriter.close();
+
+                    ProcessBuilder builder = new ProcessBuilder("sh", outputDir + "/run.sh");
+                    builder.redirectError(Redirect.appendTo(new File(outputDir + "/log.txt")));
+                    Process process = builder.start();
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                    while (reader.readLine() != null) {
+                    }
+                    process.waitFor();
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            }
+        }
+        else 
+        {
+            File scaffoldFile = new File(outputDir + "/scaffold.fasta");
+            if (scaffoldFile.exists() && !scaffoldFile.isDirectory()) 
+            {
+                String cmd = "";
+                try {
+                    cmd = "cd " + outputDir + "\n"
+                            + "rm scaffold.fasta*\n" 
+                            + "cp longest-non-suspicious.fasta scaffold.fasta\n"
+                            + "samtools faidx scaffold.fasta\n";
+
+                    FileWriter shellFileWriter = new FileWriter(outputDir + "/run.sh");
+                    shellFileWriter.write("#!/bin/bash\n");
+                    shellFileWriter.write(cmd);
+                    shellFileWriter.close();
+
+                    ProcessBuilder builder = new ProcessBuilder("sh", outputDir + "/run.sh");
+                    builder.redirectError(Redirect.appendTo(new File(outputDir + "/log.txt")));
+                    Process process = builder.start();
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                    while (reader.readLine() != null) {
+                    }
+                    process.waitFor();
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            }
+        }
+    }
+    
+    private static void checkCoverage(boolean firstTime) {
+        runAlignmentGetCoverage();
+        List<Integer> percentiles = readCoverageGetPercentile();
+        boolean noSuspicious = writeCoverageQuantile(percentiles.get(0), percentiles.get(1));          
+        
+        BufferedWriter bwOutLog = null;
+        try {
+            bwOutLog = new BufferedWriter(new FileWriter(outputDir + "/output-log.txt", true));
+            if (!noSuspicious) {
+                updateScaffoldWithLongest(firstTime);
+                bwOutLog.write("Scaffold got updated for suspicious region.\n");
+            }
+            else {
+                bwOutLog.write("Scaffold didn't get updated as there is no suspicious region.\n");
+            }
+            bwOutLog.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        
+    }
+    
     private static void extendOneScaffold() {
         int iteration = 1;
         String cmd = "";
@@ -958,19 +1264,25 @@ public class ExtendScaffold {
         
         //grow for the first time
         int prevLength = 0;
-        updateCurrentScaffold();
+        updateCurrentScaffold();      
+        
         if (checkCircularity())
         {
             extendContig = false;
         }
         else
         {
+            //check the coverage and get longest non-suspicious region
+            checkCoverage(true);
             growScaffoldWithAssembly();
         }
         
         while (extendContig) {           
             int currentLength = getScaffoldLenFromTruncatedExtend();
-            if (currentLength > prevLength)
+            if (currentLength > 300000) {
+                extendContig = false;
+            }
+            else if (currentLength > prevLength)
             {
                 prevLength = currentLength;
                 updateCurrentScaffold();
@@ -980,6 +1292,9 @@ public class ExtendScaffold {
                 }
                 else
                 {
+                    if (iteration > 1) {
+                        checkCoverage(false);
+                    }
                     getTruncatedScaffoldAndExtend(currentLength);
                     iteration++;
                 }               
@@ -988,7 +1303,7 @@ public class ExtendScaffold {
                 extendContig = false;
             }
             
-            if (extendContig && iteration > 100) {
+            if (extendContig && iteration > 2000) {
                 extendContig = false;
             }
         }
