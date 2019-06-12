@@ -1007,7 +1007,7 @@ public class ExtendScaffold {
     
     private static boolean writeCoverageQuantile (int quantile15Percent, int quantile85Percent) 
     {        
-        boolean noSuspicious = false;
+        boolean hasSuspiciousRegion = false;
         int scaffoldLength = 0;
         String scaffoldId = "";
         List<Integer> suspiciousStarts = new ArrayList<Integer>();
@@ -1064,7 +1064,7 @@ public class ExtendScaffold {
         }  
         BufferedWriter bwCoverageOutputLog = null;
         if (suspiciousStarts.isEmpty()) {
-            noSuspicious = true;
+            hasSuspiciousRegion = false;
             try {
                 bwCoverageOutputLog = new BufferedWriter(new FileWriter(outputDir + "/suspicious-regions.log", true));
                 bwCoverageOutputLog.write(scaffoldId + " has no suspicious region\n");
@@ -1075,6 +1075,7 @@ public class ExtendScaffold {
         }
         else 
         {
+            hasSuspiciousRegion = true;
             int maxStartBase = 1;
             int maxLength = 0;
             int start = 0;
@@ -1082,8 +1083,7 @@ public class ExtendScaffold {
             try {
                 bwCoverageOutputLog = new BufferedWriter(new FileWriter(outputDir + "/suspicious-regions.log", true));
                 bwCoverageOutputLog.write(scaffoldId + " has " + suspiciousStarts.size() + " suspicious regions\n");
-                
-                noSuspicious = false;
+                               
                 //get start and end of longest non-suspicious region  
                 for (int i = 0; i < suspiciousStarts.size(); i++) {
                     start = suspiciousStarts.get(i);
@@ -1141,107 +1141,101 @@ public class ExtendScaffold {
             }
         }
         
-        return noSuspicious;
+        return hasSuspiciousRegion;
     }
     
-    private static void updateScaffoldWithLongest(boolean firstTime) {
-        if (firstTime) 
+    private static void updateScaffoldWithLongest() {      
+        File scaffoldFile = new File(outputDir + "/scaffold.fasta");
+        if (scaffoldFile.exists() && !scaffoldFile.isDirectory()) 
         {
-            File scaffoldFile = new File(outputDir + "/scaffold-truncated/scaffold.fasta");
-            if (scaffoldFile.exists() && !scaffoldFile.isDirectory()) 
-            {
-                String cmd = "";
-                try {
-                    cmd = "cd " + outputDir + "\n"
-                            + "rm scaffold.fasta*\n" 
-                            + "cd scaffold-truncated\n"
-                            + "rm scaffold.fasta*\n"
-                            + "cd ..\n"
-                            + "cp longest-non-suspicious.fasta scaffold-truncated/scaffold.fasta\n"
-                            + "cd scaffold-truncated\n"
-                            + "samtools faidx scaffold.fasta\n";
+            String cmd = "";
+            try {
+                cmd = "cd " + outputDir + "\n"
+                        + "rm scaffold.fasta*\n" 
+                        + "cp longest-non-suspicious.fasta scaffold.fasta\n"
+                        + "samtools faidx scaffold.fasta\n";
 
-                    FileWriter shellFileWriter = new FileWriter(outputDir + "/run.sh");
-                    shellFileWriter.write("#!/bin/bash\n");
-                    shellFileWriter.write(cmd);
-                    shellFileWriter.close();
+                FileWriter shellFileWriter = new FileWriter(outputDir + "/run.sh");
+                shellFileWriter.write("#!/bin/bash\n");
+                shellFileWriter.write(cmd);
+                shellFileWriter.close();
 
-                    ProcessBuilder builder = new ProcessBuilder("sh", outputDir + "/run.sh");
-                    builder.redirectError(Redirect.appendTo(new File(outputDir + "/log.txt")));
-                    Process process = builder.start();
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-                    while (reader.readLine() != null) {
-                    }
-                    process.waitFor();
-                } catch (Exception ex) {
-                    ex.printStackTrace();
+                ProcessBuilder builder = new ProcessBuilder("sh", outputDir + "/run.sh");
+                builder.redirectError(Redirect.appendTo(new File(outputDir + "/log.txt")));
+                Process process = builder.start();
+                BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                while (reader.readLine() != null) {
                 }
+                process.waitFor();
+            } catch (Exception ex) {
+                ex.printStackTrace();
             }
         }
-        else 
+        
+    }
+    
+    private static void copyScaffoldForAssembly() {
+        File scaffoldFile = new File(outputDir + "/scaffold.fasta");
+        if (scaffoldFile.exists() && !scaffoldFile.isDirectory()) 
         {
-            File scaffoldFile = new File(outputDir + "/scaffold.fasta");
-            if (scaffoldFile.exists() && !scaffoldFile.isDirectory()) 
-            {
-                String cmd = "";
-                try {
-                    cmd = "cd " + outputDir + "\n"
-                            + "rm scaffold.fasta*\n" 
-                            + "cp longest-non-suspicious.fasta scaffold.fasta\n"
-                            + "samtools faidx scaffold.fasta\n";
+            String cmd = "";
+            try {
+                cmd = "cd " + outputDir + "\n"
+                        + "rm -r scaffold-truncated\n"
+                        + "mkdir scaffold-truncated\n"
+                        + "cp scaffold.fasta scaffold-truncated/scaffold.fasta\n"
+                        + "cd scaffold-truncated\n"
+                        + "samtools faidx scaffold.fasta\n";
 
-                    FileWriter shellFileWriter = new FileWriter(outputDir + "/run.sh");
-                    shellFileWriter.write("#!/bin/bash\n");
-                    shellFileWriter.write(cmd);
-                    shellFileWriter.close();
+                FileWriter shellFileWriter = new FileWriter(outputDir + "/run.sh");
+                shellFileWriter.write("#!/bin/bash\n");
+                shellFileWriter.write(cmd);
+                shellFileWriter.close();
 
-                    ProcessBuilder builder = new ProcessBuilder("sh", outputDir + "/run.sh");
-                    builder.redirectError(Redirect.appendTo(new File(outputDir + "/log.txt")));
-                    Process process = builder.start();
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-                    while (reader.readLine() != null) {
-                    }
-                    process.waitFor();
-                } catch (Exception ex) {
-                    ex.printStackTrace();
+                ProcessBuilder builder = new ProcessBuilder("sh", outputDir + "/run.sh");
+                builder.redirectError(Redirect.appendTo(new File(outputDir + "/log.txt")));
+                Process process = builder.start();
+                BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                while (reader.readLine() != null) {
                 }
+                process.waitFor();
+            } catch (Exception ex) {
+                ex.printStackTrace();
             }
         }
     }
     
-    private static void checkCoverage(boolean firstTime) {
+    private static boolean checkCoverage() {
         runAlignmentGetCoverage();
         List<Integer> percentiles = readCoverageGetPercentile();
-        boolean noSuspicious = writeCoverageQuantile(percentiles.get(0), percentiles.get(1));          
+        boolean hasSuspiciousRegion = writeCoverageQuantile(percentiles.get(0), percentiles.get(1));          
         
         BufferedWriter bwOutLog = null;
         try {
             bwOutLog = new BufferedWriter(new FileWriter(outputDir + "/output-log.txt", true));
-            if (!noSuspicious) {
-                updateScaffoldWithLongest(firstTime);
+            if (hasSuspiciousRegion) {                 
+                updateScaffoldWithLongest();  
                 bwOutLog.write("Scaffold got updated for suspicious region.\n");
+                bwOutLog.close();
+                copyScaffoldForAssembly();
+                growScaffoldWithAssembly();                
             }
             else {
                 bwOutLog.write("Scaffold didn't get updated as there is no suspicious region.\n");
-            }
-            bwOutLog.close();
+                bwOutLog.close();
+            }           
         } catch (Exception e) {
             e.printStackTrace();
         }
-        
+        return hasSuspiciousRegion;       
     }
     
     private static void extendOneScaffold() {
         int iteration = 1;
         String cmd = "";
         try {
-            /*cmd = "cd " + outputDir + "\n"
-                + "cp " + scaffoldFile + " scaffold.fasta\n"
-                + "samtools faidx scaffold.fasta\n";*/
             cmd = "cd " + outputDir + "\n"
-                + "mkdir scaffold-truncated\n"
-                + "cd scaffold-truncated\n"
-                + "cp " + scaffoldFile + " scaffold.fasta\n"                
+                + "cp " + scaffoldFile + " scaffold.fasta\n"
                 + "samtools faidx scaffold.fasta\n";
         
             FileWriter shellFileWriter = new FileWriter(outputDir + "/run.sh");
@@ -1261,21 +1255,8 @@ public class ExtendScaffold {
         }
         
         boolean extendContig = true;
-        
-        //grow for the first time
         int prevLength = 0;
-        updateCurrentScaffold();      
-        
-        if (checkCircularity())
-        {
-            extendContig = false;
-        }
-        else
-        {
-            //check the coverage and get longest non-suspicious region
-            checkCoverage(true);
-            growScaffoldWithAssembly();
-        }
+        boolean needUpdate = false;
         
         while (extendContig) {           
             int currentLength = getScaffoldLenFromTruncatedExtend();
@@ -1292,10 +1273,32 @@ public class ExtendScaffold {
                 }
                 else
                 {
-                    if (iteration > 1) {
-                        checkCoverage(false);
+                    needUpdate = checkCoverage();
+                    /*if (needUpdate) {
+                        //update current length
+                        int newLength = getScaffoldLenFromTruncatedExtend();
+                        if (newLength <= currentLength) {
+                            updateCurrentScaffold();
+                            prevLength = newLength;
+                            getTruncatedScaffoldAndExtend(newLength);
+                        }                                                
+                    }*/
+                    //alternate approach
+                    if (needUpdate) {
+                        //update current length
+                        int newLength = getScaffoldLenFromTruncatedExtend();
+                        updateCurrentScaffold();
+                        if (iteration == 1) {
+                            prevLength = newLength;
+                            getTruncatedScaffoldAndExtend(newLength); 
+                        }
+                        else {
+                            getTruncatedScaffoldAndExtend(currentLength);
+                        }
                     }
-                    getTruncatedScaffoldAndExtend(currentLength);
+                    else {
+                        getTruncatedScaffoldAndExtend(currentLength);
+                    }
                     iteration++;
                 }               
             }
